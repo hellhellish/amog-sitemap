@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AMOG Sitemap
  * Description: Yet another sitemap generator for WP. XML sitemap index, посты, термины, архивы CPT и карта изображений. Без внешних API.
- * Version: 1.0.5
+ * Version: 1.1.0
  * Requires PHP: 7.4
  * Requires at least: 5.9
  * Author: hellhellish
@@ -15,7 +15,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'AMOG_SITEMAP_VERSION', '1.0.5' );
+define( 'AMOG_SITEMAP_VERSION', '1.1.0' );
 define( 'AMOG_SITEMAP_PATH', plugin_dir_path( __FILE__ ) );
 define( 'AMOG_SITEMAP_URL',  plugin_dir_url( __FILE__ ) );
 define( 'AMOG_SITEMAP_FILE', __FILE__ );

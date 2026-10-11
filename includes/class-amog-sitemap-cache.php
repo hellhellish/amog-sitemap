@@ -40,15 +40,21 @@ class AMOG_Sitemap_Cache {
 
     /**
      * save_post: точечная инвалидация по типу поста и его таксономиям.
+     *
+     * $post уже передан хуком — используем его поля напрямую,
+     * без get_post_status() / get_post().
      */
     public static function on_save_post( $post_id, $post, $update ) {
+        if ( ! $post instanceof WP_Post ) {
+            return;
+        }
+
         if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
             return;
         }
 
-        $status = get_post_status( $post_id );
-        if ( $status !== 'publish' ) {
-            // Черновики и мусор в sitemap не попадают — не инвалидируем.
+        // Черновики и мусор в sitemap не попадают — не инвалидируем.
+        if ( $post->post_status !== 'publish' ) {
             return;
         }
 

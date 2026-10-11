@@ -5,9 +5,13 @@
  * Уважает:
  *  - _seo_robots на термине
  *  - _seo_cascade_noindex на термине и его родителях
- *  - свои настройки skip_category / skip_tag
+ *  - свои настройки skip_taxonomies (включая легаси skip_category / skip_tag)
  *
  * lastmod берётся из term meta _amog_lastmod (см. AMOG_Sitemap_Lastmod).
+ * Пустой urlset отдаёт 404.
+ *
+ * count_pages() возвращает 0, если терминов нет —
+ * чтобы Index не ссылался на несуществующую карту.
  */
 class AMOG_Sitemap_Terms {
 
@@ -22,6 +26,7 @@ class AMOG_Sitemap_Terms {
         $tax = sanitize_key( get_query_var( 'amog_sitemap_tax' ) );
         if ( ! $tax || ! taxonomy_exists( $tax ) ) {
             status_header( 404 );
+            nocache_headers();
             exit;
         }
 
@@ -29,6 +34,7 @@ class AMOG_Sitemap_Terms {
         $skip_taxes = (array) AMOG_Sitemap_Settings::get( 'skip_taxonomies' );
         if ( ! empty( $skip_taxes ) && in_array( $tax, $skip_taxes, true ) ) {
             status_header( 404 );
+            nocache_headers();
             exit;
         }
 
@@ -36,27 +42,41 @@ class AMOG_Sitemap_Terms {
 
         $cached = AMOG_Sitemap_Cache::get( "tax_{$tax}_{$page}" );
         if ( $cached ) {
+            $this->send_headers();
+            echo $this->xml_declaration();
             echo $cached;
             exit;
         }
 
         $xml = $this->build( $tax, $page );
+        if ( $xml === '' ) {
+            status_header( 404 );
+            nocache_headers();
+            exit;
+        }
+
         AMOG_Sitemap_Cache::set( "tax_{$tax}_{$page}", $xml );
+        $this->send_headers();
+        echo $this->xml_declaration();
         echo $xml;
         exit;
     }
 
+    /**
+     * Количество страниц urlset.
+     * 0 — если терминов нет.
+     */
     public static function count_pages( $tax ) {
-        $per_file = (int) AMOG_Sitemap_Settings::get( 'per_file' );
-        if ( $per_file < 1 ) $per_file = 1000;
-
         $count = wp_count_terms([
             'taxonomy'   => $tax,
             'hide_empty' => true,
         ]);
-        if ( is_wp_error( $count ) ) return 1;
+        if ( is_wp_error( $count ) || (int) $count < 1 ) return 0;
 
-        return max( 1, (int) ceil( $count / $per_file ) );
+        $per_file = (int) AMOG_Sitemap_Settings::get( 'per_file' );
+        if ( $per_file < 1 ) $per_file = 1000;
+
+        return (int) ceil( (int) $count / $per_file );
     }
 
     /**
@@ -66,6 +86,9 @@ class AMOG_Sitemap_Terms {
         return AMOG_Sitemap_Lastmod::get_for_taxonomy( $tax );
     }
 
+    /**
+     * @return string XML или '' если ни одного URL.
+     */
     private function build( $tax, $page ) {
         $per_file = (int) AMOG_Sitemap_Settings::get( 'per_file' );
         if ( $per_file < 1 ) $per_file = 1000;
@@ -81,36 +104,43 @@ class AMOG_Sitemap_Terms {
             'order'      => 'ASC',
         ]);
 
-        $lines   = [];
-        $lines[] = '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">';
-
-        if ( ! is_wp_error( $terms ) ) {
-            foreach ( $terms as $term ) {
-                if ( $this->is_noindex( $term ) ) continue;
-
-                $link = get_term_link( $term );
-                if ( is_wp_error( $link ) || ! $link ) continue;
-
-                $lastmod = AMOG_Sitemap_Lastmod::get_for_term( $term->term_id, $term->taxonomy );
-
-                $lines[] = sprintf(
-                    "<url><loc>%s</loc>%s<changefreq>weekly</changefreq><priority>0.5</priority></url>",
-                    esc_url( $link ),
-                    $lastmod ? '<lastmod>' . esc_html( $lastmod ) . '</lastmod>' : ''
-                );
-            }
+        if ( is_wp_error( $terms ) || empty( $terms ) ) {
+            return '';
         }
 
-        $lines[] = '</urlset>';
-        return implode( "\n", $lines );
+        $lines     = [];
+        $url_count = 0;
+
+        foreach ( $terms as $term ) {
+            if ( $this->is_noindex( $term ) ) continue;
+
+            $link = get_term_link( $term );
+            if ( is_wp_error( $link ) || ! $link ) continue;
+
+            $lastmod = AMOG_Sitemap_Lastmod::get_for_term( $term->term_id, $term->taxonomy );
+
+            $lines[] = sprintf(
+                "<url><loc>%s</loc>%s<changefreq>weekly</changefreq><priority>0.5</priority></url>",
+                esc_url( $link ),
+                $lastmod ? '<lastmod>' . esc_html( $lastmod ) . '</lastmod>' : ''
+            );
+            $url_count++;
+        }
+
+        if ( $url_count === 0 ) {
+            return '';
+        }
+
+        $out   = [];
+        $out[] = '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">';
+        $out   = array_merge( $out, $lines );
+        $out[] = '</urlset>';
+
+        return implode( "\n", $out );
     }
 
     /**
      * Проверка noindex для термина.
-     *
-     * 1. Собственный _seo_robots.
-     * 2. _seo_cascade_noindex на термине или любом родителе.
-     * 3. Свои настройки skip_category / skip_tag.
      */
     private function is_noindex( $term ) {
         $robots = get_term_meta( $term->term_id, '_seo_robots', true );
@@ -122,8 +152,6 @@ class AMOG_Sitemap_Terms {
             return true;
         }
 
-        // Своя настройка skip_taxonomies (уже включает category/post_tag
-        // через обратную совместимость в Settings::get()).
         $skip_taxes = (array) AMOG_Sitemap_Settings::get( 'skip_taxonomies' );
         if ( ! empty( $skip_taxes ) && in_array( $term->taxonomy, $skip_taxes, true ) ) {
             return true;
@@ -145,5 +173,20 @@ class AMOG_Sitemap_Terms {
         }
 
         return false;
+    }
+
+    /**
+     * XML-хедеры. Только перед реальным выводом тела.
+     */
+    private function send_headers() {
+        header( 'Content-Type: application/xml; charset=utf-8' );
+        header( 'X-Robots-Tag: noindex, follow', true );
+    }
+
+    /**
+     * XML-декларация. Только вместе с телом.
+     */
+    private function xml_declaration() {
+        return '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
     }
 }

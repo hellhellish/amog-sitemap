@@ -9,6 +9,10 @@
  *
  * lastmod в UTC — из post_modified_gmt.
  * Пагинация по per_file из настроек.
+ * Пустой urlset (ни одной картинки на странице) отдаёт 404.
+ *
+ * count_pages() возвращает 0, если вообще нет публичных постов —
+ * чтобы Index не ссылался на несуществующую карту.
  */
 class AMOG_Sitemap_Images {
 
@@ -22,6 +26,7 @@ class AMOG_Sitemap_Images {
 
         if ( ! AMOG_Sitemap_Settings::get( 'images_enabled' ) ) {
             status_header( 404 );
+            nocache_headers();
             exit;
         }
 
@@ -29,28 +34,34 @@ class AMOG_Sitemap_Images {
 
         $cached = AMOG_Sitemap_Cache::get( "images_{$page}" );
         if ( $cached ) {
+            $this->send_headers();
+            echo $this->xml_declaration();
             echo $cached;
             exit;
         }
 
         $xml = $this->build( $page );
+        if ( $xml === '' ) {
+            status_header( 404 );
+            nocache_headers();
+            exit;
+        }
+
         AMOG_Sitemap_Cache::set( "images_{$page}", $xml );
+        $this->send_headers();
+        echo $this->xml_declaration();
         echo $xml;
         exit;
     }
 
     /**
      * Количество страниц image sitemap.
-     * Считаем все публичные посты без attachment, пагинация по per_file.
-     * Пустые страницы возможны (если в выборке нет постов с картинками) — не критично.
+     * 0 — если нет публичных постов без attachment.
      */
     public static function count_pages() {
-        $per_file = (int) AMOG_Sitemap_Settings::get( 'per_file' );
-        if ( $per_file < 1 ) $per_file = 1000;
-
         $types = get_post_types( [ 'public' => true ], 'names' );
         unset( $types['attachment'] );
-        if ( empty( $types ) ) return 1;
+        if ( empty( $types ) ) return 0;
 
         $count = 0;
         foreach ( $types as $type ) {
@@ -59,13 +70,16 @@ class AMOG_Sitemap_Images {
                 $count += (int) $obj->publish;
             }
         }
+        if ( $count < 1 ) return 0;
 
-        return max( 1, (int) ceil( $count / $per_file ) );
+        $per_file = (int) AMOG_Sitemap_Settings::get( 'per_file' );
+        if ( $per_file < 1 ) $per_file = 1000;
+
+        return (int) ceil( $count / $per_file );
     }
 
     /**
      * lastmod image sitemap = MAX(post_modified_gmt) по всем публичным типам без attachment.
-     * Для sitemapindex.
      */
     public static function get_lastmod() {
         global $wpdb;
@@ -86,6 +100,9 @@ class AMOG_Sitemap_Images {
         return gmdate( 'c', strtotime( $date . ' UTC' ) );
     }
 
+    /**
+     * @return string XML или '' если ни одного URL.
+     */
     private function build( $page ) {
         $per_file = (int) AMOG_Sitemap_Settings::get( 'per_file' );
         if ( $per_file < 1 ) $per_file = 1000;
@@ -94,9 +111,6 @@ class AMOG_Sitemap_Images {
 
         $post_types = get_post_types( [ 'public' => true ], 'names' );
         unset( $post_types['attachment'] );
-
-        $lines   = [];
-        $lines[] = '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">';
 
         $query = new WP_Query([
             'post_type'      => array_values( $post_types ),
@@ -107,6 +121,9 @@ class AMOG_Sitemap_Images {
             'order'          => 'ASC',
             'no_found_rows'  => true,
         ]);
+
+        $lines     = [];
+        $url_count = 0;
 
         foreach ( $query->posts as $post ) {
             $post_id = $post->ID;
@@ -140,10 +157,19 @@ class AMOG_Sitemap_Images {
 
             $chunks[] = '</url>';
             $lines[]  = implode( '', $chunks );
+            $url_count++;
         }
 
-        $lines[] = '</urlset>';
-        return implode( "\n", $lines );
+        if ( $url_count === 0 ) {
+            return '';
+        }
+
+        $out   = [];
+        $out[] = '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">';
+        $out   = array_merge( $out, $lines );
+        $out[] = '</urlset>';
+
+        return implode( "\n", $out );
     }
 
     /**
@@ -174,7 +200,7 @@ class AMOG_Sitemap_Images {
             }
         }
 
-        // _seo_og_image (если задан вручную или через My SEO)
+        // _seo_og_image
         $og = get_post_meta( $post_id, '_seo_og_image', true );
         if ( $og && ! isset( $seen[ $og ] ) ) {
             $seen[ $og ] = true;
@@ -194,9 +220,6 @@ class AMOG_Sitemap_Images {
         return $images;
     }
 
-    /**
-     * Рекурсивно вытащить URL изображений из ACF-значения.
-     */
     private function collect_acf_images( $val, &$images, &$seen ) {
         if ( is_array( $val ) ) {
             if ( isset( $val['url'] ) && is_string( $val['url'] ) && preg_match( '#^https?://#i', $val['url'] ) ) {
@@ -216,5 +239,20 @@ class AMOG_Sitemap_Images {
                 $this->collect_acf_images( $item, $images, $seen );
             }
         }
+    }
+
+    /**
+     * XML-хедеры. Только перед реальным выводом тела.
+     */
+    private function send_headers() {
+        header( 'Content-Type: application/xml; charset=utf-8' );
+        header( 'X-Robots-Tag: noindex, follow', true );
+    }
+
+    /**
+     * XML-декларация. Только вместе с телом.
+     */
+    private function xml_declaration() {
+        return '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
     }
 }

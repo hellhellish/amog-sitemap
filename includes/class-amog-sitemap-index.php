@@ -2,6 +2,13 @@
 /**
  * Sitemap index: /sitemap_index.xml
  * Также хранит rewrite-правила для всех типов.
+ *
+ * В индекс попадают только те карты, которые:
+ *  - имеют count_pages() > 0 (непустой источник), и
+ *  - либо ещё не кэшированы (первый прогрев), либо есть в кэше и непустые.
+ *
+ * Для не-index kind Index НЕ печатает ни заголовков, ни XML-декларации:
+ * это делает класс-владелец тела (Posts/Terms/CPT/Images).
  */
 class AMOG_Sitemap_Index {
 
@@ -33,14 +40,12 @@ class AMOG_Sitemap_Index {
             'top'
         );
 
-        // tax-{taxonomy}[-page]
         add_rewrite_rule(
             '^sitemap-tax-([a-z0-9_-]+?)(?:-(\d+))?\.xml$',
             'index.php?amog_sitemap=tax&amog_sitemap_tax=$matches[1]&amog_sitemap_page=$matches[2]',
             'top'
         );
 
-        // {type}[-page]
         add_rewrite_rule(
             '^sitemap-([a-z0-9_-]+?)(?:-(\d+))?\.xml$',
             'index.php?amog_sitemap=type&amog_sitemap_type=$matches[1]&amog_sitemap_page=$matches[2]',
@@ -66,21 +71,26 @@ class AMOG_Sitemap_Index {
             exit;
         }
 
+        if ( $kind !== 'index' ) {
+            return;
+        }
+
         header( 'Content-Type: application/xml; charset=utf-8' );
         header( 'X-Robots-Tag: noindex, follow', true );
 
         echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
 
-        // Только index рендерится и завершается здесь.
-        // Остальные kind (type/tax/cpt-archive/images) обрабатываются
-        // в своих классах на template_redirect с приоритетом 20.
-        if ( $kind === 'index' ) {
-            $this->render_index();
-            exit;
-        }
+        $this->render_index();
+        exit;
     }
 
-    private function render_index() {
+    /**
+     * Рендер тела sitemap index.
+     *
+     * Public — чтобы Site Health мог вызвать напрямую, без HTTP-запроса.
+     * Метод не ставит хедеры и не печатает XML-декларацию — только тело.
+     */
+    public function render_index() {
         $cache_key = 'index';
         $cached    = AMOG_Sitemap_Cache::get( $cache_key );
 
@@ -89,75 +99,78 @@ class AMOG_Sitemap_Index {
             return;
         }
 
-        $now = gmdate( 'c' );
-
         $lines   = [];
         $lines[] = '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">';
 
         // Post types
         foreach ( $this->get_indexable_post_types() as $type ) {
             $pages = AMOG_Sitemap_Posts::count_pages( $type );
+            if ( $pages < 1 ) continue;
+
             for ( $i = 1; $i <= $pages; $i++ ) {
+                if ( ! $this->include_in_index( "type_{$type}_{$i}" ) ) {
+                    continue;
+                }
+
                 $url = $i === 1
                     ? home_url( "/sitemap-{$type}.xml" )
                     : home_url( "/sitemap-{$type}-{$i}.xml" );
 
                 $lastmod = AMOG_Sitemap_Posts::get_lastmod( $type );
 
-                $lines[] = sprintf(
-                    "<sitemap><loc>%s</loc><lastmod>%s</lastmod></sitemap>",
-                    esc_url( $url ),
-                    esc_html( $lastmod ?: $now )
-                );
+                $lines[] = $this->sitemap_entry( $url, $lastmod );
             }
         }
 
         // Таксономии
         foreach ( $this->get_indexable_taxonomies() as $tax ) {
             $pages = AMOG_Sitemap_Terms::count_pages( $tax );
+            if ( $pages < 1 ) continue;
+
             for ( $i = 1; $i <= $pages; $i++ ) {
+                if ( ! $this->include_in_index( "tax_{$tax}_{$i}" ) ) {
+                    continue;
+                }
+
                 $url = $i === 1
                     ? home_url( "/sitemap-tax-{$tax}.xml" )
                     : home_url( "/sitemap-tax-{$tax}-{$i}.xml" );
 
                 $lastmod = AMOG_Sitemap_Terms::get_lastmod( $tax );
 
-                $lines[] = sprintf(
-                    "<sitemap><loc>%s</loc><lastmod>%s</lastmod></sitemap>",
-                    esc_url( $url ),
-                    esc_html( $lastmod ?: $now )
-                );
+                $lines[] = $this->sitemap_entry( $url, $lastmod );
             }
         }
 
         // CPT-архивы
-        if ( AMOG_Sitemap_Settings::get( 'cpt_archives' ) ) {
-            $archive_types = AMOG_Sitemap_CPT::get_archive_types();
-            if ( ! empty( $archive_types ) ) {
+        if (
+            AMOG_Sitemap_Settings::get( 'cpt_archives' ) &&
+            ! AMOG_Sitemap_Settings::get( 'skip_cpt_archive' ) &&
+            AMOG_Sitemap_CPT::has_any_archive()
+        ) {
+            if ( $this->include_in_index( 'cpt_archive' ) ) {
                 $lastmod = AMOG_Sitemap_CPT::get_lastmod();
-                $lines[] = sprintf(
-                    "<sitemap><loc>%s</loc><lastmod>%s</lastmod></sitemap>",
-                    esc_url( home_url( '/sitemap-cpt-archive.xml' ) ),
-                    esc_html( $lastmod ?: $now )
-                );
+                $lines[] = $this->sitemap_entry( home_url( '/sitemap-cpt-archive.xml' ), $lastmod );
             }
         }
 
         // Image sitemap
         if ( AMOG_Sitemap_Settings::get( 'images_enabled' ) ) {
-            $lastmod = AMOG_Sitemap_Images::get_lastmod();
-            $pages   = AMOG_Sitemap_Images::count_pages();
+            $pages = AMOG_Sitemap_Images::count_pages();
+            if ( $pages > 0 ) {
+                $lastmod = AMOG_Sitemap_Images::get_lastmod();
 
-            for ( $i = 1; $i <= $pages; $i++ ) {
-                $url = $i === 1
-                    ? home_url( '/sitemap-images.xml' )
-                    : home_url( "/sitemap-images-{$i}.xml" );
+                for ( $i = 1; $i <= $pages; $i++ ) {
+                    if ( ! $this->include_in_index( "images_{$i}" ) ) {
+                        continue;
+                    }
 
-                $lines[] = sprintf(
-                    "<sitemap><loc>%s</loc><lastmod>%s</lastmod></sitemap>",
-                    esc_url( $url ),
-                    esc_html( $lastmod ?: $now )
-                );
+                    $url = $i === 1
+                        ? home_url( '/sitemap-images.xml' )
+                        : home_url( "/sitemap-images-{$i}.xml" );
+
+                    $lines[] = $this->sitemap_entry( $url, $lastmod );
+                }
             }
         }
 
@@ -168,11 +181,33 @@ class AMOG_Sitemap_Index {
         echo $xml;
     }
 
+    /**
+     * Включать ли карту в индекс.
+     * Второй барьер после count_pages().
+     */
+    private function include_in_index( $cache_base ) {
+        $cached = AMOG_Sitemap_Cache::get( $cache_base );
+        if ( $cached === false ) {
+            return true;
+        }
+        return ! empty( $cached );
+    }
+
+    /**
+     * Строка <sitemap> с опциональным lastmod.
+     */
+    private function sitemap_entry( $url, $lastmod ) {
+        return sprintf(
+            "<sitemap><loc>%s</loc>%s</sitemap>",
+            esc_url( $url ),
+            $lastmod ? '<lastmod>' . esc_html( $lastmod ) . '</lastmod>' : ''
+        );
+    }
+
     public function get_indexable_post_types() {
         $types = get_post_types( [ 'public' => true ], 'names' );
         unset( $types['attachment'] );
 
-        // Исключаем типы, отмеченные в skip_post_types
         $skip = (array) AMOG_Sitemap_Settings::get( 'skip_post_types' );
         if ( ! empty( $skip ) ) {
             foreach ( $skip as $slug ) {
@@ -186,7 +221,6 @@ class AMOG_Sitemap_Index {
     public function get_indexable_taxonomies() {
         $taxes = get_taxonomies( [ 'public' => true ], 'names' );
 
-        // Исключаем таксономии из skip_taxonomies
         $skip = (array) AMOG_Sitemap_Settings::get( 'skip_taxonomies' );
         if ( ! empty( $skip ) ) {
             foreach ( $skip as $slug ) {
