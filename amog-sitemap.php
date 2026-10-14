@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AMOG Sitemap
  * Description: Yet another sitemap generator for WP. XML sitemap index, посты, термины, архивы CPT и карта изображений. Без внешних API.
- * Version: 1.1.0
+ * Version: 1.1.1
  * Requires PHP: 7.4
  * Requires at least: 5.9
  * Author: hellhellish
@@ -15,7 +15,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'AMOG_SITEMAP_VERSION', '1.1.0' );
+define( 'AMOG_SITEMAP_VERSION', '1.1.1' );
 define( 'AMOG_SITEMAP_PATH', plugin_dir_path( __FILE__ ) );
 define( 'AMOG_SITEMAP_URL',  plugin_dir_url( __FILE__ ) );
 define( 'AMOG_SITEMAP_FILE', __FILE__ );
@@ -28,7 +28,6 @@ require_once AMOG_SITEMAP_PATH . 'includes/class-amog-sitemap-posts.php';
 require_once AMOG_SITEMAP_PATH . 'includes/class-amog-sitemap-terms.php';
 require_once AMOG_SITEMAP_PATH . 'includes/class-amog-sitemap-cpt.php';
 require_once AMOG_SITEMAP_PATH . 'includes/class-amog-sitemap-images.php';
-require_once AMOG_SITEMAP_PATH . 'includes/class-amog-sitemap-robots.php';
 require_once AMOG_SITEMAP_PATH . 'includes/class-amog-sitemap-health.php';
 
 add_action( 'plugins_loaded', 'amog_sitemap_bootstrap' );
@@ -63,9 +62,6 @@ function amog_sitemap_bootstrap() {
 
     // Инвалидация кэша + обновление _amog_lastmod
     AMOG_Sitemap_Cache::register_hooks();
-
-    // Строка Sitemap: в robots.txt
-    new AMOG_Sitemap_Robots();
 
     // Админка
     if ( is_admin() ) {
